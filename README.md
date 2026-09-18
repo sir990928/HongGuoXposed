@@ -1,17 +1,22 @@
 # 红果增强 (HongGuoXposed)
 
-红果免费短剧（`com.phoenix.read`）的 LSPosed 模块，基于 **libxposed API 102**，
-使用 **DexKit 2.0** 在运行时动态查询 Hook 点（零硬编码类名/方法名），
-并配以 Jetpack Compose 自定义深色 UI。
+红果免费短剧（国内版 `com.phoenix.read` / 海外版 `com.phoenix.read.oversea.gp`）的 LSPosed 模块，
+基于 **libxposed API 102**，使用 **DexKit 2.0** 在运行时按方法名+签名动态查询 Hook 点
+（零硬编码混淆类名/方法名），并配以 Jetpack Compose 自定义深色 UI。
+
+> **真实目标来源**：Hook 目标方法名（`isVip` / `canShowPauseAd` / `handleVideoEvent` / `getVipInfo` …）
+> 经对 [KEJIYUNB/hongguo](https://github.com/KEJIYUNB/hongguo) 参考项目的逆向分析验证——这些是
+> 红果各版本中**稳定未混淆**的业务 API。本模块用 DexKit `findMethod` 按名动态发现这些方法，
+> 无需维护任何版本映射表；连 VIP 信息模型类都由 Hook 侧依据反射返回类型动态构造，不出现一个硬编码类名。
 
 ## 功能
 
 | 功能 | 说明 | 拦截策略 |
 | :--- | :--- | :--- |
-| VIP 剧集解锁 | 解锁付费 / VIP 专属短剧 | 会员校验 `boolean` 方法 → 强制返回 `true`；付费墙触发 `void` 方法 → 置空 |
-| 去广告 | 屏蔽信息流 / 播放页 / 弹窗广告 | 广告加载/展示 `void` 方法 → 置空（原方法体跳过） |
-| 跳过开屏 | 开屏广告立即跳过 | 「可跳过」`boolean` 方法 → 强制返回 `true` |
-| 解锁下载 | 允许缓存 / 下载付费短剧 | 下载权限 `boolean` 方法 → 强制返回 `true` |
+| VIP 剧集解锁 | 解锁付费 / VIP 专属短剧 | `isVip`/`isAnyVip`/`canReadShortStory` 等 boolean 方法 → 强制 `true`；`getVipInfo` 系列返回伪造会员模型（到期 2099） |
+| 去广告 | 屏蔽暂停广告 / 图标广告 / 片尾广告 | `canShowPauseAd`/`enablePauseAd`/`handleVideoEvent` → 强制 `false`；`requestAd`/`onPauseAdShow` → 置空 |
+| 跳过开屏 | 开屏广告立即跳过 | 「可跳过」boolean 方法 → 强制 `true`（best-effort 字符串线索） |
+| 解锁下载 | 允许缓存 / 下载付费短剧 | 下载权限 boolean 方法 → 强制 `true`（best-effort 字符串线索） |
 
 ## 技术栈
 
@@ -28,7 +33,7 @@ app/src/main/
 ├── resources/META-INF/xposed/       # libxposed 102 现代模块元数据
 │   ├── module.prop                  #   minApiVersion=102 / targetApiVersion=102
 │   ├── java_init.list               #   入口类: com.hg.xposed.MainHook
-│   └── scope.list                   #   作用域: com.phoenix.read
+│   └── scope.list                   #   作用域: com.phoenix.read (+ 海外版)
 └── kotlin/com/hg/xposed/
     ├── MainHook.kt                  # 模块入口：onModuleLoaded / onPackageReady
     ├── core/                        # Target 常量 / Logger / FeatureFlags
@@ -59,7 +64,7 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 
 1. 安装生成的 APK；
 2. 在 **LSPosed** 中启用本模块；
-3. 作用域勾选 **红果免费短剧（`com.phoenix.read`）**（`scope.list` 已预置默认作用域）；
+3. 作用域勾选 **红果免费短剧**（`scope.list` 已预置国内版 `com.phoenix.read` + 海外版 `com.phoenix.read.oversea.gp`）；
 4. 「强制停止」红果后重新打开；
 5. 在模块 UI 的「功能」页按需开关，**修改后需重启红果生效**。
 
@@ -69,36 +74,40 @@ echo "sdk.dir=/path/to/Android/Sdk" > local.properties
 
 ```
 onPackageReady(PackageReadyParam)
+  ├── 跳过 WebView 沙箱/渲染进程
   ├── 取 classLoader + applicationInfo.sourceDir(apk 路径)
   ├── FeatureFlags.from(getRemotePreferences("module_config"))   # 读 UI 配置
   ├── DexKitBridge.create(apkPath).use { bridge ->               # 创建一次即关
   │     for (hook in [VIP, 去广告, 跳过开屏, 解锁下载])
   │       if (hook.isEnabled(flags)) hook.apply(bridge, classLoader, flags)
   │           └── Finders.findXxx(bridge, classLoader)           # DexKit 查询
-  │           └── bridge.findMethod { matcher { addUsingString(kw); returnType=... } }
+  │           └── bridge.findMethod { matcher { name="isVip"; ... } }   # 按方法名精确查询
   │           └── MethodData.getMethodInstance(classLoader)      # 解析为反射 Method
-  │           └── xp.hook(method).intercept { ... }              # 安装拦截器
+  │           └── 仅保留返回类型匹配的方法（boolean/void 过滤）
+  │           └── xp.hook(method).setExceptionMode(PROTECTIVE).intercept { ... }
   └── }
 ```
 
 ## 如何精调 Hook 点（关键）
 
-红果为字节跳动应用，类名高度混淆且随版本变化。本模块的所有查询点集中在
-**`app/src/main/kotlin/com/hg/xposed/dexkit/Finders.kt` → `Hints`**，用 jadx / frida-trace
-定位到新的高信号字符串后，**只需改这一处**，无需动任何 Hook 逻辑：
+所有查询点集中在 **`app/src/main/kotlin/com/hg/xposed/dexkit/Finders.kt`**，分两类：
 
+**1. 稳定方法名（VIP/广告核心，跨版本无需改）：**
 ```kotlin
-object Hints {
-    var vipBooleanKeywords    = listOf("is_vip", "isVip", "vipStatus", ...)
-    var paywallVoidKeywords   = listOf("开通会员", "立即开通", "解锁全集", ...)
-    var adVoidKeywords       = listOf("loadAd", "load_ad", "广告", "csj", "pangle", ...)
-    var splashBooleanKeywords = listOf("canSkip", "can_skip", "canJump", ...)
-    var downloadBooleanKeywords = listOf("canDownload", "allow_download", ...)
-}
+val VIP_BOOLEAN_NAMES = listOf("isVip","isAnyVip","canReadShortStory","hasVipShortSeriesPrivilege",
+    "hasNoAdFollAllScene","hasNoAdForShortSeries","isVipUser","isSpecificVipOrHigher","canShowVipCenter")
+val AD_BOOLEAN_NAMES = listOf("canShowPauseAd","enablePauseAd","handleVideoEvent")
+val AD_VOID_NAMES = listOf("requestAd","onPauseAdShow")
 ```
+DexKit `findMethod` 在 `com.dragon.read.*`（红果业务代码包前缀）范围内按名精确匹配，
+命中后按反射 `Method.returnType` 过滤为 boolean/void，再安装拦截器。
 
-查询语义：对每个关键字在 `com.phoenix / com.bytedance / com.ss.android` 包范围内做
-**包含匹配**，并叠加 `returnType`（`boolean` / `void`）约束，命中后按方法 descriptor 去重。
+**2. best-effort 字符串线索（开屏/下载，混淆概率高）：**
+```kotlin
+val SPLASH_BOOLEAN_KEYWORDS = listOf("canSkip","isSkip","skipEnable","canJump","skipAd")
+val DOWNLOAD_BOOLEAN_KEYWORDS = listOf("canDownload","allowDownload","isDownloadEnable","downloadEnable")
+```
+对新版本用 jadx / frida-trace 定位到新方法名后，**只改这一处常量列表**即可，无需动任何 Hook 逻辑。
 解析为反射 `Method` 失败会自动跳过并告警，不会崩溃（`module.prop` 已设 `exceptionMode=protective`）。
 
 ## 免责声明

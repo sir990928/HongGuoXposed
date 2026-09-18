@@ -9,55 +9,90 @@ import org.luckypray.dexkit.result.MethodData
 import java.lang.reflect.Method
 
 /**
- * DexKit 查询中枢：所有 Hook 点均通过运行时 dex 查询动态定位，不硬编码类名/方法名。
+ * DexKit 查询中枢：所有 Hook 点均通过运行时 dex 查询动态定位，不硬编码混淆类名/方法名。
  *
- * 由于红果短剧为字节跳动应用、类名随版本高度混淆，这里采用「关键字 + 返回类型 + 包范围」
- * 的多策略并集查询。命中结果会按方法 descriptor 去重。
+ * 设计来源：对 KEJIYUNB/hongguo 参考项目的逆向分析。该参考项目的「功能性 Hook」大多落在
+ * **稳定未混淆的方法名**上（isVip / canShowPauseAd / handleVideoEvent …），只是承载这些方法的
+ * 类有些是稳定公开类、有些是 R8 混淆类。本模块的策略：
  *
- * ## 如何精调
- * 真实逆向得到新的字符串线索后，只需修改下方 [Hints] 中的关键字列表即可，
- * 无需改动任何 Hook 逻辑。
+ * 1. **按方法名 + 包范围** 用 DexKit `findMethod` 动态发现，绝不硬编码混淆名；
+ * 2. 命中后 `getMethodInstance(classLoader)` 解析为反射 [Method]，再交给 [com.hg.xposed.hooks] 安装；
+ * 3. 对返回值有语义要求的方法（如 `getVipInfo`），由 Hook 侧依据反射 `Method.returnType` 动态构造假对象，
+ *    连「VIP 模型类名」都不需要硬编码。
+ *
+ * 因此本模块跨红果各版本无需维护任何版本映射表。
  */
 object Finders {
 
+    // ==================== 真实目标方法名（稳定、未混淆，来自参考项目验证） ====================
+
     /**
-     * 可调线索。这里的字符串都是短剧类 App 常见的高信号词；
-     * 在真实 APK 上用 jadx / frida-trace 校准后替换为更精确的值即可。
+     * VIP 权益校验方法：命中后强制返回 true 即可解锁会员剧集 / 去广告权益 / 短剧阅读权。
+     * 这些方法名在红果各版本中保持稳定（未被 R8 混淆），分布在
+     * PrivilegeManager / NsVipImpl / NsUserInfoDependImpl / NsComicAdDependImpl 等多个类中。
+     * DexKit 一次性发现所有同名方法，无需指定类。
      */
-    object Hints {
-        /** 返回 boolean 的会员校验方法（命中后强制返回 true） */
-        var vipBooleanKeywords: List<String> = listOf(
-            "is_vip", "isVip", "vipStatus", "is_subscribe", "isVipUser",
-            "checkVip", "isMember", "vip"
-        )
+    val VIP_BOOLEAN_NAMES = listOf(
+        "isVip", "isAnyVip", "canReadShortStory", "hasVipShortSeriesPrivilege",
+        "hasNoAdFollAllScene", "hasNoAdForShortSeries", "isVipUser",
+        "isSpecificVipOrHigher", "canShowVipCenter",
+    )
 
-        /** 付费墙触发方法（命中后置空，弹窗不弹出） */
-        var paywallVoidKeywords: List<String> = listOf(
-            "开通会员", "立即开通", "解锁全集", "续费", "解锁", "购买会员", "升级会员"
-        )
+    /**
+     * VIP 信息模型获取方法：命中后返回伪造的 VIP 模型（用于会员标识 / 到期时间展示）。
+     * 不指定返回类型——Hook 侧依据每个方法自身返回类型动态构造假对象，适配
+     * dragon-read 的 VipInfoModel 与 KMP 的 VipInfo 两种模型。
+     */
+    val VIP_INFO_NAMES = listOf("getVipInfo", "getVipInfoModel", "getAllVipInfo")
 
-        /** 广告加载/展示方法（命中后置空，广告不加载） */
-        var adVoidKeywords: List<String> = listOf(
-            "loadAd", "load_ad", "ad_load", "showAd", "show_ad",
-            "splashAd", "feedAd", "interstitial", "csj", "pangle", "广告"
-        )
+    /**
+     * 广告「展示/开关」类 boolean 方法：命中后强制返回 false 抑制广告。
+     * 分布在 SeriesPauseAdImpl.canShowPauseAd/enablePauseAd 与 AdIconLayer.handleVideoEvent 等。
+     */
+    val AD_BOOLEAN_NAMES = listOf("canShowPauseAd", "enablePauseAd", "handleVideoEvent")
 
-        /** 开屏跳过相关 boolean 方法（命中后强制返回 true） */
-        var splashBooleanKeywords: List<String> = listOf(
-            "canSkip", "can_skip", "isSkip", "skipEnable", "canJump", "canJumpAd"
-        )
+    /**
+     * 广告「加载/触发」类 void 方法：命中后置空（跳过原方法体）使广告不加载/不展示。
+     */
+    val AD_VOID_NAMES = listOf("requestAd", "onPauseAdShow")
 
-        /** 下载权限 boolean 方法（命中后强制返回 true） */
-        var downloadBooleanKeywords: List<String> = listOf(
-            "canDownload", "can_download", "allowDownload", "allow_download",
-            "isDownloadEnable", "downloadEnable", "downloadAllow"
-        )
+    /**
+     * 开屏「可跳过」相关 boolean 方法（混淆概率较高，best-effort 字符串线索）。
+     */
+    val SPLASH_BOOLEAN_KEYWORDS = listOf("canSkip", "isSkip", "skipEnable", "canJump", "skipAd")
+
+    /**
+     * 下载权限 boolean 方法（best-effort 字符串线索）。
+     */
+    val DOWNLOAD_BOOLEAN_KEYWORDS = listOf("canDownload", "allowDownload", "isDownloadEnable", "downloadEnable")
+
+    // ==================== 通用查询原语 ====================
+
+    /**
+     * 按方法名精确查询（DexKit `name` 为精确匹配）。可选叠加返回类型/参数约束。
+     * 在 [packages] 范围内搜索；为 null 则全 dex 搜索（用于跨 KMP 模块定位 getVipInfo）。
+     */
+    private fun findByName(
+        bridge: DexKitBridge,
+        name: String,
+        packages: List<String> = Target.SEARCH_PACKAGES,
+        matcherConfig: MethodMatcher.() -> Unit = {},
+    ): List<MethodData> {
+        return runCatching {
+            bridge.findMethod {
+                if (packages.isNotEmpty()) searchPackages(*packages.toTypedArray())
+                matcher {
+                    this.name = name
+                    matcherConfig()
+                }
+            }
+        }.getOrElse {
+            Logger.w("DexKit 查询失败 name=$name: $it")
+            emptyList()
+        }
     }
 
-    /**
-     * 在目标包范围内，对每个关键字执行一次「包含字符串」查询，并集去重。
-     * [matcherConfig] 可叠加返回类型/参数等约束。
-     */
+    /** 按多个关键字「字符串包含」查询并集（用于混淆目标的 best-effort 定位）。 */
     private fun findByKeywords(
         bridge: DexKitBridge,
         keywords: List<String>,
@@ -67,7 +102,7 @@ object Finders {
         for (kw in keywords) {
             val list = runCatching {
                 bridge.findMethod {
-                    searchPackages(Target.SEARCH_PACKAGES)
+                    searchPackages(*Target.SEARCH_PACKAGES.toTypedArray())
                     matcher {
                         addUsingString(kw, StringMatchType.Contains, ignoreCase = true)
                         matcherConfig()
@@ -79,7 +114,7 @@ object Finders {
         return out.values.toList()
     }
 
-    /** 将 [MethodData] 解析为宿主进程可反射的 [Method]，解析失败自动跳过并告警。 */
+    /** 将 [MethodData] 列表解析为宿主进程可反射的 [Method]，解析失败自动跳过并告警。 */
     private fun resolve(list: List<MethodData>, classLoader: ClassLoader): List<Method> =
         list.mapNotNull { md ->
             runCatching { md.getMethodInstance(classLoader) }
@@ -87,18 +122,63 @@ object Finders {
                 .getOrNull()
         }
 
-    fun vipBooleanCheckMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> =
-        resolve(findByKeywords(bridge, Hints.vipBooleanKeywords) { returnType = "boolean" }, cl)
+    /** 去重多个查询的并集（按 method 全限定签名）。 */
+    private fun union(vararg lists: List<Method>): List<Method> {
+        val seen = mutableSetOf<String>()
+        val out = ArrayList<Method>()
+        for (l in lists) for (m in l) {
+            val key = m.declaringClass.name + "#" + m.name + "(" + m.parameterTypes.joinToString(",") { it.name } + ")"
+            if (seen.add(key)) out.add(m)
+        }
+        return out
+    }
 
-    fun paywallVoidMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> =
-        resolve(findByKeywords(bridge, Hints.paywallVoidKeywords) { returnType = "void" }, cl)
+    // ==================== VIP ====================
 
-    fun adVoidMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> =
-        resolve(findByKeywords(bridge, Hints.adVoidKeywords) { returnType = "void" }, cl)
+    /** VIP 权益校验方法（boolean / Boolean 返回）。 */
+    fun vipBooleanMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> {
+        val raw = VIP_BOOLEAN_NAMES.flatMap { findByName(bridge, it) }
+        val resolved = resolve(raw, cl)
+        // 仅保留返回 boolean/Boolean 的方法，避免误伤同名异类方法
+        return resolved.filter { rt ->
+            rt.returnType == java.lang.Boolean.TYPE || rt.returnType == java.lang.Boolean::class.java
+        }
+    }
 
-    fun splashBooleanMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> =
-        resolve(findByKeywords(bridge, Hints.splashBooleanKeywords) { returnType = "boolean" }, cl)
+    /** VIP 信息模型获取方法（getVipInfo / getVipInfoModel / getAllVipInfo，跨 dragon-read 与 KMP 模块）。 */
+    fun vipInfoMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> {
+        // 全 dex 搜索：KMP 账号服务可能在非 com.dragon.read 的 KMP 包下
+        val raw = VIP_INFO_NAMES.flatMap { findByName(bridge, it, packages = emptyList()) }
+        return resolve(raw, cl)
+    }
 
-    fun downloadBooleanMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> =
-        resolve(findByKeywords(bridge, Hints.downloadBooleanKeywords) { returnType = "boolean" }, cl)
+    // ==================== 广告 ====================
+
+    /** 广告 boolean 方法（canShowPauseAd / enablePauseAd / handleVideoEvent）→ 返回 false。 */
+    fun adBooleanMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> {
+        val raw = AD_BOOLEAN_NAMES.flatMap { findByName(bridge, it) }
+        val resolved = resolve(raw, cl)
+        return resolved.filter { rt ->
+            rt.returnType == java.lang.Boolean.TYPE || rt.returnType == java.lang.Boolean::class.java
+        }
+    }
+
+    /** 广告 void 方法（requestAd / onPauseAdShow）→ 置空。 */
+    fun adVoidMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> {
+        val raw = AD_VOID_NAMES.flatMap { findByName(bridge, it) }
+        val resolved = resolve(raw, cl)
+        return resolved.filter { it.returnType == java.lang.Void.TYPE }
+    }
+
+    // ==================== best-effort（混淆目标，字符串线索） ====================
+
+    fun splashBooleanMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> {
+        val raw = findByKeywords(bridge, SPLASH_BOOLEAN_KEYWORDS) { returnType = "boolean" }
+        return resolve(raw, cl)
+    }
+
+    fun downloadBooleanMethods(bridge: DexKitBridge, cl: ClassLoader): List<Method> {
+        val raw = findByKeywords(bridge, DOWNLOAD_BOOLEAN_KEYWORDS) { returnType = "boolean" }
+        return resolve(raw, cl)
+    }
 }

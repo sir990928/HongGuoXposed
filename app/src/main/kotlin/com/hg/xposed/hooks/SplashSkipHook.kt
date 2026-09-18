@@ -15,6 +15,6 @@ class SplashSkipHook(xp: XposedInterface) : BaseHook(xp) {
         val skips = Finders.splashBooleanMethods(bridge, classLoader)
         Logger.i("[$name] 候选: 跳过方法=${skips.size}")
         skips.forEach { hookReturnTrue(it) }
-        if (skips.isEmpty()) Logger.w("[$name] 未命中任何方法，请在 Finders.Hints 校准关键词")
+        if (skips.isEmpty()) Logger.w("[$name] 未命中，请在 Finders.SPLASH_BOOLEAN_KEYWORDS 校准线索")
     }
 }

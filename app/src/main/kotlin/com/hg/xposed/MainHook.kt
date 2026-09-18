@@ -19,20 +19,30 @@ import io.github.libxposed.api.XposedModuleInterface.PackageReadyParam
  * - 框架以无参构造实例化本类，再通过 attachFramework 注入 [io.github.libxposed.api.XposedInterface]。
  * - [onPackageReady] 在目标包 AppComponentFactory 就绪、Application 创建前触发，
  *   此时拿到真实 ClassLoader 与 APK 路径，正是 DexKit 查询 + 安装 Hook 的时机。
+ * - 同时覆盖国内版 `com.phoenix.read` 与海外版 `com.phoenix.read.oversea.gp`，
+ *   并跳过 WebView 沙箱/渲染进程，避免误伤。
  */
 class MainHook : XposedModule() {
 
+    @Volatile private var processName: String = ""
+
     override fun onModuleLoaded(param: ModuleLoadedParam) {
         Logger.attach(this)
+        processName = param.processName ?: ""
         val fw = runCatching { frameworkName }.getOrDefault("?")
-        Logger.i("模块已加载 进程=${param.processName} 框架=$fw")
+        Logger.i("模块已加载 进程=$processName 框架=$fw API=${apiVersion}")
     }
 
     override fun onPackageReady(param: PackageReadyParam) {
-        if (param.packageName != Target.PACKAGE) return
-        if (!param.isFirstPackage) return
+        if (param.packageName !in Target.TARGET_PACKAGES) return
 
-        Logger.i("命中红果短剧: ${param.packageName}")
+        // 跳过 WebView 沙箱/渲染进程：不承载业务 UI，安装 Hook 反易误伤
+        if (Target.SANDBOX_PROCESS_MARKERS.any { processName.contains(it) }) {
+            Logger.i("沙箱/渲染进程，跳过 Hook 安装: $processName")
+            return
+        }
+
+        Logger.i("命中红果短剧: ${param.packageName} 进程=$processName")
         val classLoader = param.classLoader
         val apkPath = param.applicationInfo.sourceDir
 

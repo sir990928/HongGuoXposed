@@ -15,6 +15,6 @@ class DownloadUnlockHook(xp: XposedInterface) : BaseHook(xp) {
         val dls = Finders.downloadBooleanMethods(bridge, classLoader)
         Logger.i("[$name] 候选: 下载权限方法=${dls.size}")
         dls.forEach { hookReturnTrue(it) }
-        if (dls.isEmpty()) Logger.w("[$name] 未命中任何方法，请在 Finders.Hints 校准关键词")
+        if (dls.isEmpty()) Logger.w("[$name] 未命中，请在 Finders.DOWNLOAD_BOOLEAN_KEYWORDS 校准线索")
     }
 }
