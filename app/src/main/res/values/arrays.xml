@@ -2,5 +2,7 @@
 <resources>
     <string-array name="xposed_scope">
         <item>com.phoenix.read</item>
+        <item>com.phoenix.read.oversea.gp</item>
+        <item>com.hg.xposed</item>
     </string-array>
 </resources>

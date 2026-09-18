@@ -1,6 +1,12 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Android 11+ package visibility: so the config UI / LSPosed can see 红果 installed. -->
+    <queries>
+        <package android:name="com.phoenix.read" />
+        <package android:name="com.phoenix.read.oversea.gp" />
+    </queries>
+
     <application
         android:allowBackup="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -34,6 +40,6 @@
             android:value="102" />
         <meta-data
             android:name="xposedscope"
-            android:resource="@array/xposed_scope" />
+            android:value="com.phoenix.read,com.phoenix.read.oversea.gp,com.hg.xposed" />
     </application>
 </manifest>
