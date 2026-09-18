@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">红果增强</string>
+    <string name="module_description">红果免费短剧增强：DexKit 动态查询 Hook 点，解锁 VIP / 去广告 / 跳过开屏 / 解锁下载。基于 libxposed API 102。</string>
+
+    <!-- Bottom nav -->
+    <string name="nav_home">首页</string>
+    <string name="nav_features">功能</string>
+    <string name="nav_about">关于</string>
+
+    <!-- Features -->
+    <string name="feat_vip">VIP 剧集解锁</string>
+    <string name="feat_vip_desc">解锁付费 / VIP 专属短剧，绕过会员校验</string>
+    <string name="feat_ad">去广告</string>
+    <string name="feat_ad_desc">屏蔽信息流 / 播放页 / 弹窗广告</string>
+    <string name="feat_splash">跳过开屏</string>
+    <string name="feat_splash_desc">开屏广告立即跳过，直达首页</string>
+    <string name="feat_download">解锁下载</string>
+    <string name="feat_download_desc">允许缓存 / 下载付费短剧到本地</string>
+
+    <!-- Home -->
+    <string name="home_title">红果增强</string>
+    <string name="home_subtitle">基于 libxposed API 102 · DexKit 2.0</string>
+    <string name="home_open_target">打开红果短剧</string>
+    <string name="home_scope_hint">请在 LSPosed 中勾选作用域：红果免费短剧（com.phoenix.read），重启红果生效。</string>
+    <string name="home_no_target">未检测到红果短剧，请先安装。</string>
+
+    <!-- About -->
+    <string name="about_version">版本</string>
+    <string name="about_target">目标包名</string>
+    <string name="about_api">API 版本</string>
+    <string name="about_disclaimer">免责声明</string>
+    <string name="about_disclaimer_text">本模块仅供学习与研究用途，请勿用于商业或非法用途。使用本模块带来的任何后果由使用者自行承担。</string>
+</resources>
